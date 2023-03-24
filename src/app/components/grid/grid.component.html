@@ -1,0 +1,116 @@
+<div class="container" style="text-align: center">
+  <h2 *ngIf="role">White turn</h2>
+  <h2 *ngIf="!role">Black turn</h2>
+
+  <table *ngIf="kills">
+    <tr>
+      <td *ngFor="let kill of kills">
+        <span *ngIf="whites.includes(kill) && kill !== 'p'">
+          <img
+            width="45px"
+            src="../../../assets/images/{{ kill | lowercase }}{{
+              kill | lowercase
+            }}.png"
+          />
+        </span>
+      </td>
+    </tr>
+    <tr>
+      <td *ngFor="let kill of kills">
+        <span *ngIf="whites.includes(kill) && kill === 'p'">
+          <img
+            width="45px"
+            src="../../../assets/images/{{ kill | lowercase }}{{
+              kill | lowercase
+            }}.png"
+          />
+        </span>
+      </td>
+    </tr>
+  </table>
+
+  <table class="grid">
+    <!-- <tr>
+      <td *ngFor="let c of [0, 0, 1, 2, 3, 4, 5, 6, 7]">
+        {{ c }}
+      </td>
+    </tr> -->
+    <tr *ngFor="let row of grid; let r = index">
+      <!-- <td>
+        {{ r }}
+      </td> -->
+      <td
+        [ngClass]="boolean[r][c] ? 'tdpath' : ''"
+        *ngFor="let col of row; let c = index"
+        [ngClass]="
+          copycontent == col && r == prevX && c == prevY ? 'selected' : ''
+        "
+      >
+        <!-- {{ !user.includes(col) }} {{ col }} -->
+        <!-- {{ boolean[r][c] }} -->
+        <!-- [disabled]="boolean[r][c] == false && pause == true && col == ' '" -->
+        <!-- {{ ["k", "K"].includes(copycontent) }} -->
+        <!-- {{ boolean[r][c] }} -->
+        <span *ngIf="['k', 'K'].includes(copycontent)">{{
+          paths.includes(r.toString() + c.toString()).toString()
+        }}</span>
+        <button
+          [ngClass]="boolean[r][c] ? 'path' : ''"
+          (click)="clicked(col, r, c, boolean[r][c])"
+          [ngClass]="boolean[r][c] == true && col != ' ' ? 'enemy' : ''"
+          [disabled]="!boolean[r][c] && col !== ' ' && !user.includes(col)"
+          [ngClass]="
+            ['k', 'K'].includes(copycontent) &&
+            boolean[r][c] &&
+            paths.includes(r.toString() + c.toString())
+              ? 'threat'
+              : ''
+          "
+          [ngClass]="
+            isCheck && r == kingX && c == kingY && col !== ' ' ? 'check' : ''
+          "
+        >
+          <!-- {{ r.toString() + c.toString() }} -->
+          <img
+            *ngIf="blacks.includes(col)"
+            src="../../../assets/images/{{ col | lowercase }}.png"
+            width="30px"
+            alt=""
+          />
+
+          <img
+            *ngIf="whites.includes(col)"
+            src="../../../assets/images/{{ col | lowercase }}{{
+              col | lowercase
+            }}.png"
+            width="45px"
+            alt=""
+          />
+        </button>
+      </td>
+    </tr>
+  </table>
+
+  <table *ngIf="kills">
+    <tr>
+      <td *ngFor="let kill of kills">
+        <span *ngIf="blacks.includes(kill) && kill !== 'P'">
+          <img
+            width="30px"
+            src="../../../assets/images/{{ kill | lowercase }}.png"
+          />
+        </span>
+      </td>
+    </tr>
+    <tr>
+      <td *ngFor="let kill of kills">
+        <span *ngIf="blacks.includes(kill) && kill === 'P'">
+          <img
+            width="30px"
+            src="../../../assets/images/{{ kill | lowercase }}.png"
+          />
+        </span>
+      </td>
+    </tr>
+  </table>
+</div>
