@@ -124,7 +124,9 @@ export class GridComponent {
   }
 
   onSquareClick(file: string, rank: number): void {
-    if (this.promotionMove || this.isGameOver) return;
+    if (this.promotionMove || this.isGameOver ||
+      (this.connectionStatus !== 'Offline' && this.playerColor === 'waiting') ||
+      this.playerColor === 'spectator') return;
 
     const square = `${file}${rank}`;
     if (this.selectedSquare && this.isLegalTarget(square)) {
@@ -244,7 +246,8 @@ export class GridComponent {
   private isCurrentPlayerPiece(piece: string): boolean {
     const pieceColor = piece === piece.toLowerCase() ? 'w' : 'b';
     return this.game.turn() === pieceColor &&
-      (this.playerColor === 'waiting' || this.playerColor === pieceColor);
+      ((this.playerColor === 'waiting' && this.connectionStatus === 'Offline') ||
+        this.playerColor === pieceColor);
   }
 
   private isPromotionMove(from: string, to: string): boolean {

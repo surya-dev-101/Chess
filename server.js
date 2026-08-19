@@ -58,17 +58,18 @@ function broadcastState(roomId) {
 
 io.on('connection', (socket) => {
   socket.on('join-game', ({ roomId = 'main', name = 'Player' } = {}) => {
-    const room = getRoom(String(roomId).slice(0, 40) || 'main');
+    const normalizedRoomId = String(roomId).slice(0, 40) || 'main';
+    const room = getRoom(normalizedRoomId);
     const existingColors = Array.from(room.players.values()).map((player) => player.color);
     const color = existingColors.includes('w') ? (existingColors.includes('b') ? 'spectator' : 'b') : 'w';
 
-    socket.join(roomId);
-    socket.data.roomId = roomId;
+    socket.join(normalizedRoomId);
+    socket.data.roomId = normalizedRoomId;
     socket.data.color = color;
     if (color !== 'spectator') room.players.set(socket.id, { id: socket.id, name, color });
 
-    socket.emit('player-assigned', { color, roomId });
-    broadcastState(roomId);
+    socket.emit('player-assigned', { color, roomId: normalizedRoomId });
+    broadcastState(normalizedRoomId);
   });
 
   socket.on('make-move', ({ from, to, promotion } = {}) => {
@@ -112,7 +113,8 @@ io.on('connection', (socket) => {
     room.players.delete(socket.id);
     io.to(roomId).emit('player-left', { color: socket.data.color });
     broadcastState(roomId);
-    if (!room.players.size && io.sockets.adapter.rooms.get(roomId)?.size !== 0) rooms.delete(roomId);
+    const socketRoom = io.sockets.adapter.rooms.get(roomId);
+    if (!room.players.size && (!socketRoom || socketRoom.size === 0)) rooms.delete(roomId);
   });
 });
 
