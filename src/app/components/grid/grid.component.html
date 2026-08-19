@@ -1,116 +1,96 @@
-<div class="container" style="text-align: center">
-  <h2 *ngIf="role">White turn</h2>
-  <h2 *ngIf="!role">Black turn</h2>
+<main class="chess-shell">
+  <header class="game-header">
+    <div>
+      <p class="eyebrow">Local match</p>
+      <h1>Chessboard</h1>
+    </div>
+    <div class="header-actions">
+      <button class="secondary-button" type="button" (click)="undoMove()" [disabled]="!moveHistory.length || !!promotionMove">Undo</button>
+      <button class="primary-button" type="button" (click)="newGame()">New game</button>
+    </div>
+  </header>
 
-  <table *ngIf="kills">
-    <tr>
-      <td *ngFor="let kill of kills">
-        <span *ngIf="whites.includes(kill) && kill !== 'p'">
-          <img
-            width="45px"
-            src="../../../assets/images/{{ kill | lowercase }}{{
-              kill | lowercase
-            }}.png"
-          />
-        </span>
-      </td>
-    </tr>
-    <tr>
-      <td *ngFor="let kill of kills">
-        <span *ngIf="whites.includes(kill) && kill === 'p'">
-          <img
-            width="45px"
-            src="../../../assets/images/{{ kill | lowercase }}{{
-              kill | lowercase
-            }}.png"
-          />
-        </span>
-      </td>
-    </tr>
-  </table>
+  <div class="online-bar" aria-live="polite">
+    <span class="online-indicator" [class.offline]="connectionStatus !== 'Online'"></span>
+    <strong>{{ connectionStatus }}</strong>
+    <span class="online-divider"></span>
+    <span>Room: {{ roomId }}</span>
+    <span class="online-divider"></span>
+    <span *ngIf="playerColor === 'w'">You are White</span>
+    <span *ngIf="playerColor === 'b'">You are Black</span>
+    <span *ngIf="playerColor === 'spectator'">Spectator</span>
+    <span *ngIf="onlinePlayers < 2 && connectionStatus === 'Online'">Waiting for opponent</span>
+  </div>
 
-  <table class="grid">
-    <!-- <tr>
-      <td *ngFor="let c of [0, 0, 1, 2, 3, 4, 5, 6, 7]">
-        {{ c }}
-      </td>
-    </tr> -->
-    <tr *ngFor="let row of grid; let r = index">
-      <!-- <td>
-        {{ r }}
-      </td> -->
-      <td
-        [ngClass]="boolean[r][c] ? 'tdpath' : ''"
-        *ngFor="let col of row; let c = index"
-        [ngClass]="
-          copycontent == col && r == prevX && c == prevY ? 'selected' : ''
-        "
-      >
-        <!-- {{ !user.includes(col) }} {{ col }} -->
-        <!-- {{ boolean[r][c] }} -->
-        <!-- [disabled]="boolean[r][c] == false && pause == true && col == ' '" -->
-        <!-- {{ ["k", "K"].includes(copycontent) }} -->
-        <!-- {{ boolean[r][c] }} -->
-        <span *ngIf="['k', 'K'].includes(copycontent)">{{
-          paths.includes(r.toString() + c.toString()).toString()
-        }}</span>
-        <button
-          [ngClass]="boolean[r][c] ? 'path' : ''"
-          (click)="clicked(col, r, c, boolean[r][c])"
-          [ngClass]="boolean[r][c] == true && col != ' ' ? 'enemy' : ''"
-          [disabled]="!boolean[r][c] && col !== ' ' && !user.includes(col)"
-          [ngClass]="
-            ['k', 'K'].includes(copycontent) &&
-            boolean[r][c] &&
-            paths.includes(r.toString() + c.toString())
-              ? 'threat'
-              : ''
-          "
-          [ngClass]="
-            isCheck && r == kingX && c == kingY && col !== ' ' ? 'check' : ''
-          "
-        >
-          <!-- {{ r.toString() + c.toString() }} -->
-          <img
-            *ngIf="blacks.includes(col)"
-            src="../../../assets/images/{{ col | lowercase }}.png"
-            width="30px"
-            alt=""
-          />
+  <section class="game-layout" aria-label="Chess game">
+    <div class="board-panel">
+      <div class="status-row" [class.check-status]="isCheck" [class.game-over]="isGameOver">
+        <span class="status-dot"></span>
+        <strong>{{ statusMessage }}</strong>
+        <span class="move-number">Move {{ moveCount }}</span>
+      </div>
 
-          <img
-            *ngIf="whites.includes(col)"
-            src="../../../assets/images/{{ col | lowercase }}{{
-              col | lowercase
-            }}.png"
-            width="45px"
-            alt=""
-          />
-        </button>
-      </td>
-    </tr>
-  </table>
+      <div class="board-wrap">
+        <div class="rank-labels" aria-hidden="true"><span *ngFor="let rank of ranks">{{ rank }}</span></div>
+        <div class="board" role="grid" aria-label="Chessboard">
+          <div class="board-row" *ngFor="let row of grid; let rowIndex = index">
+            <button
+              *ngFor="let piece of row; let columnIndex = index"
+              type="button"
+              class="square"
+              [class.light-square]="isLightSquare(rowIndex, columnIndex)"
+              [class.dark-square]="!isLightSquare(rowIndex, columnIndex)"
+              [class.selected]="isSelected(files[columnIndex] + ranks[rowIndex])"
+              [class.legal-target]="isLegalTarget(files[columnIndex] + ranks[rowIndex])"
+              [class.last-move]="isLastMove(files[columnIndex] + ranks[rowIndex])"
+              [attr.aria-label]="piece ? getPieceLabel(piece) + ' on ' + files[columnIndex] + ranks[rowIndex] : 'Empty square ' + files[columnIndex] + ranks[rowIndex]"
+              (click)="onSquareClick(rowIndex, columnIndex)"
+            >
+              <span class="capture-marker" *ngIf="isLegalTarget(files[columnIndex] + ranks[rowIndex]) && piece"></span>
+              <span class="move-marker" *ngIf="isLegalTarget(files[columnIndex] + ranks[rowIndex]) && !piece"></span>
+              <img *ngIf="piece" [src]="'assets/images/' + getPieceImage(piece)" [alt]="getPieceLabel(piece)" />
+            </button>
+          </div>
+        </div>
+        <div class="file-labels" aria-hidden="true"><span *ngFor="let file of files">{{ file }}</span></div>
+      </div>
+    </div>
 
-  <table *ngIf="kills">
-    <tr>
-      <td *ngFor="let kill of kills">
-        <span *ngIf="blacks.includes(kill) && kill !== 'P'">
-          <img
-            width="30px"
-            src="../../../assets/images/{{ kill | lowercase }}.png"
-          />
-        </span>
-      </td>
-    </tr>
-    <tr>
-      <td *ngFor="let kill of kills">
-        <span *ngIf="blacks.includes(kill) && kill === 'P'">
-          <img
-            width="30px"
-            src="../../../assets/images/{{ kill | lowercase }}.png"
-          />
-        </span>
-      </td>
-    </tr>
-  </table>
-</div>
+    <aside class="side-panel">
+      <section class="panel-section">
+        <div class="section-heading"><h2>Captured</h2><span>{{ capturedWhite.length + capturedBlack.length }}</span></div>
+        <div class="captured-group">
+          <span class="captured-label">White</span>
+          <div class="captured-row">
+            <span *ngFor="let piece of capturedWhite" class="captured-piece"><img [src]="'assets/images/' + getPieceImage(piece.toLowerCase())" [alt]="getPieceLabel(piece.toLowerCase())" /></span>
+            <span class="empty-note" *ngIf="!capturedWhite.length">None</span>
+          </div>
+        </div>
+        <div class="captured-group">
+          <span class="captured-label">Black</span>
+          <div class="captured-row dark-captures">
+            <span *ngFor="let piece of capturedBlack" class="captured-piece"><img [src]="'assets/images/' + getPieceImage(piece)" [alt]="getPieceLabel(piece)" /></span>
+            <span class="empty-note" *ngIf="!capturedBlack.length">None</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section history-section">
+        <div class="section-heading"><h2>Moves</h2><span>{{ moveHistory.length }}</span></div>
+        <ol class="move-list" *ngIf="moveHistory.length; else emptyHistory">
+          <li *ngFor="let move of moveHistory; let index = index"><span *ngIf="index % 2 === 0">{{ (index / 2) + 1 }}.</span><strong>{{ move.san }}</strong></li>
+        </ol>
+        <ng-template #emptyHistory><p class="empty-note">Your moves will appear here.</p></ng-template>
+      </section>
+    </aside>
+  </section>
+
+  <div class="promotion-backdrop" *ngIf="promotionMove" (click)="cancelPromotion()">
+    <section class="promotion-dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-title" (click)="$event.stopPropagation()">
+      <p class="eyebrow">Pawn promotion</p>
+      <h2 id="promotion-title">Choose a piece</h2>
+      <div class="promotion-options"><button *ngFor="let option of promotionPieces" type="button" (click)="choosePromotion(option.value)"><img [src]="'assets/images/' + getPromotionImage(option.value)" [alt]="option.label" /><span>{{ option.label }}</span></button></div>
+      <button class="cancel-button" type="button" (click)="cancelPromotion()">Cancel</button>
+    </section>
+  </div>
+</main>

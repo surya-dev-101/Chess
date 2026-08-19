@@ -1,1444 +1,302 @@
-import { Component, OnInit } from '@angular/core';
+import { Component } from '@angular/core';
+import * as ChessModule from 'chess.js';
+import { io, Socket } from 'socket.io-client';
 
-const FALSE: boolean[][] = [
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-  [false, false, false, false, false, false, false, false],
-];
+const ChessConstructor: any = (ChessModule as any).Chess || (ChessModule as any).default || ChessModule;
+
+interface MoveOption {
+  from: string;
+  to: string;
+  san: string;
+  captured?: string;
+  color: 'w' | 'b';
+  flags: string;
+  piece: string;
+}
+
+interface ServerState {
+  fen: string;
+  history: MoveOption[];
+  capturedWhite: string[];
+  capturedBlack: string[];
+  turn: 'w' | 'b';
+  check: boolean;
+  gameOver: boolean;
+  draw: boolean;
+  checkmate: boolean;
+  stalemate: boolean;
+  players: Array<{ id: string; name: string; color: 'w' | 'b' }>;
+}
 
 @Component({
   selector: 'app-grid',
   templateUrl: './grid.component.html',
   styleUrls: ['./grid.component.scss'],
 })
-export class GridComponent implements OnInit {
-  whitePawnMoves: number[][] = [];
-  blackPawnMoves: number[][] = [];
-
-  constructor() {}
-
-  grid: string[][] = [
-    ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
-    ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
-    [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-    [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-    [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-    [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-    ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
-    ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'],
+export class GridComponent {
+  readonly files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  readonly ranks = [8, 7, 6, 5, 4, 3, 2, 1];
+  readonly promotionPieces = [
+    { value: 'q', label: 'Queen' },
+    { value: 'r', label: 'Rook' },
+    { value: 'b', label: 'Bishop' },
+    { value: 'n', label: 'Knight' },
   ];
 
-  boolean: boolean[][] = FALSE;
-  pause: boolean = false;
-  copycontent: string = '';
-  prevX: number = 0;
-  prevY: number = 0;
-  whites: string[] = ['r', 'n', 'b', 'k', 'q', 'p'];
-  whitePaths: string[] = [];
-  blacks: string[] = ['R', 'N', 'B', 'K', 'Q', 'P'];
-  blackPaths: string[] = [];
-  user: string[] = this.whites;
-  role: boolean = true;
-  paths: string[] = [];
-  kingX: number = -1;
-  kingY: number = -1;
-  kills: string[] = [];
+  grid: string[][] = [];
+  selectedSquare: string | null = null;
+  legalTargets: string[] = [];
+  lastMove: { from: string; to: string } | null = null;
+  promotionMove: { from: string; to: string } | null = null;
+  moveHistory: MoveOption[] = [];
+  capturedWhite: string[] = [];
+  capturedBlack: string[] = [];
+  statusMessage = 'White to move';
+  isCheck = false;
+  isGameOver = false;
+  isDraw = false;
+  playerColor: 'w' | 'b' | 'spectator' | 'waiting' = 'waiting';
+  connectionStatus = 'Connecting';
+  onlinePlayers = 0;
 
-  isCheck: boolean = false;
+  private game = new ChessConstructor();
+  private socket!: Socket;
+  roomId = 'main';
 
-  ngOnInit(): void {
-    // if (this.role) this.paths = this.blackPaths;
-    // else this.paths = this.whitePaths;
-    // console.log('paths: ' + this.paths);
+  constructor() {
+    this.syncBoard();
+    this.connectToGame();
   }
 
-  // get the piece at the given position
-  getPiece(x: number, y: number): string {
-    return this.grid[y][x];
+  get turnLabel(): string {
+    return this.game.turn() === 'w' ? 'White' : 'Black';
   }
 
-  reset() {
-    for (let i = 0; i < 8; i++)
-      for (let j = 0; j < 8; j++) this.boolean[i][j] = false;
+  get isOnline(): boolean {
+    return !!this.socket && this.socket.connected && this.playerColor !== 'waiting';
   }
 
-  clicked(val: string, x: number, y: number, bool: boolean) {
-    if (this.isCheck) {
-      this.clickedWhenCheck(val, x, y, bool);
+  get moveCount(): number {
+    return Math.ceil(this.moveHistory.length / 2);
+  }
+
+  getPieceImage(piece: string): string {
+    const normalized = piece.toLowerCase();
+    return piece === piece.toUpperCase()
+      ? `${normalized}.png`
+      : `${normalized}${normalized}.png`;
+  }
+
+  getPieceLabel(piece: string): string {
+    const color = piece === piece.toUpperCase() ? 'black' : 'white';
+    const names: { [key: string]: string } = {
+      p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king',
+    };
+    return `${color} ${names[piece.toLowerCase()]}`;
+  }
+
+  getPromotionImage(piece: string): string {
+    return this.game.turn() === 'b' ? `${piece}.png` : `${piece}${piece}.png`;
+  }
+
+  isLightSquare(row: number, column: number): boolean {
+    return (row + column) % 2 === 0;
+  }
+
+  isSelected(square: string): boolean {
+    return this.selectedSquare === square;
+  }
+
+  isLegalTarget(square: string): boolean {
+    return this.legalTargets.includes(square);
+  }
+
+  isLastMove(square: string): boolean {
+    return !!this.lastMove && (this.lastMove.from === square || this.lastMove.to === square);
+  }
+
+  onSquareClick(row: number, column: number): void {
+    if (this.promotionMove || this.isGameOver) return;
+
+    const square = this.toSquare(row, column);
+    if (this.selectedSquare && this.isLegalTarget(square)) {
+      if (this.isPromotionMove(this.selectedSquare, square)) {
+        this.promotionMove = { from: this.selectedSquare, to: square };
+      } else {
+        this.makeMove(this.selectedSquare, square);
+      }
+      return;
+    }
+
+    const piece = this.grid[row][column];
+    if (piece && this.isCurrentPlayerPiece(piece)) {
+      this.selectSquare(square);
     } else {
-      this.selected(val, x, y, bool);
+      this.clearSelection();
     }
   }
 
-  clickedWhenCheck(val: string, x: number, y: number, bool: boolean) {
-    if (bool == false) {
-      this.copycontent = val;
-      this.paths = [];
+  choosePromotion(piece: string): void {
+    if (!this.promotionMove) return;
+    const move = this.promotionMove;
+    this.promotionMove = null;
+    this.makeMove(move.from, move.to, piece);
+  }
 
-      if (!this.role) {
-        this.user = this.blacks;
-        this.paths = this.getAllWhiteMoves();
-      } else {
-        this.user = this.whites;
-        this.paths = this.getAllBlackMoves();
-      }
+  cancelPromotion(): void {
+    this.promotionMove = null;
+  }
 
-      this.prevX = x;
-      this.prevY = y;
+  newGame(): void {
+    if (this.isOnline) {
+      this.socket.emit('new-game');
+      return;
+    }
+    this.game.reset();
+    this.moveHistory = [];
+    this.capturedWhite = [];
+    this.capturedBlack = [];
+    this.lastMove = null;
+    this.clearSelection();
+    this.syncBoard();
+  }
 
-      this.pause = true;
+  undoMove(): void {
+    if (!this.moveHistory.length || this.promotionMove) return;
+    if (this.isOnline) {
+      this.socket.emit('undo-move');
+      return;
+    }
+    this.game.undo();
+    const move = this.moveHistory.pop();
+    if (move && move.captured) {
+      const captured = move.color === 'w' ? this.capturedBlack : this.capturedWhite;
+      const index = captured.lastIndexOf(move.captured.toUpperCase());
+      if (index >= 0) captured.splice(index, 1);
+    }
+    const previous = this.moveHistory[this.moveHistory.length - 1];
+    this.lastMove = previous ? { from: previous.from, to: previous.to } : null;
+    this.clearSelection();
+    this.syncBoard();
+  }
 
-      this.reset();
+  private selectSquare(square: string): void {
+    const moves = this.game.moves({ square, verbose: true }) as MoveOption[];
+    this.selectedSquare = square;
+    this.legalTargets = moves.map((move) => move.to);
+  }
 
-      if (val === 'p') {
-        this.getWhitePawnMoves(x, y);
-      } else if (val === 'P') {
-        this.getBlackPawnMoves(x, y);
-      } else if (val === 'r') {
-        this.getWhiteRookMoves(x, y);
-      } else if (val === 'R') {
-        this.getBlackRookMoves(x, y);
-      } else if (val === 'b') {
-        this.getWhiteBishopMoves(x, y);
-      } else if (val === 'B') {
-        this.getBlackBishopMoves(x, y);
-      } else if (val === 'q') {
-        this.getWhiteQueenMoves(x, y);
-      } else if (val === 'Q') {
-        this.getBlackQueenMoves(x, y);
-      } else if (val === 'k') {
-        this.getWhiteKingMoves(x, y);
-      } else if (val === 'K') {
-        this.getBlackKingMoves(x, y);
-      } else if (val === 'n') {
-        this.getWhiteKnightMoves(x, y);
-      } else if (val === 'N') {
-        this.getBlackKnightMoves(x, y);
-      }
+  private makeMove(from: string, to: string, promotion?: string): void {
+    if (this.isOnline) {
+      this.socket.emit('make-move', { from, to, promotion });
+      this.clearSelection();
+      this.statusMessage = 'Sending move...';
+      return;
+    }
+
+    const move = this.game.move({ from, to, promotion }) as MoveOption | null;
+    if (!move) return;
+
+    this.moveHistory.push(move);
+    this.lastMove = { from: move.from, to: move.to };
+    if (move.captured) {
+      const captured = move.captured.toUpperCase();
+      (move.color === 'w' ? this.capturedBlack : this.capturedWhite).push(captured);
+    }
+    this.clearSelection();
+    this.syncBoard();
+  }
+
+  private syncBoard(): void {
+    this.grid = this.game.board().map((row: any[]) =>
+      row.map((piece: any) => piece ? (piece.color === 'w' ? piece.type : piece.type.toUpperCase()) : '')
+    );
+    this.isCheck = this.game.in_check();
+    this.isGameOver = this.game.game_over();
+    this.isDraw = this.game.in_draw();
+
+    if (this.game.in_checkmate()) {
+      this.statusMessage = `${this.turnLabel} is checkmated`;
+    } else if (this.game.in_stalemate()) {
+      this.statusMessage = 'Stalemate';
+    } else if (this.isDraw) {
+      this.statusMessage = 'Draw';
+    } else if (this.isCheck) {
+      this.statusMessage = `${this.turnLabel} is in check`;
     } else {
-      this.pause = false;
-      if (this.grid[x][y] !== ' ') this.kills.push(this.grid[x][y]);
-      console.log('kills: ' + this.kills);
-
-      this.grid[x][y] = this.copycontent;
-      this.grid[this.prevX][this.prevY] = ' ';
-
-      if (!this.role) {
-        // this.paths = this.whitePaths;
-        this.paths = this.getAllWhiteMoves();
-        console.log('wc: ' + this.paths);
-        this.check(this.role, this.paths);
-        if (this.isCheck) {
-          this.grid[this.prevX][this.prevY] = this.copycontent;
-          this.grid[x][y] = ' ';
-          console.log('check not prevented' + this.isCheck + ' ' + this.role);
-          let paths = this.checkMate(this.role);
-          console.log(paths);
-
-          if (paths.length === 0) {
-            this.role = !this.role;
-            if (this.role) alert('checkmate');
-          }
-          this.reset();
-        } else {
-          this.isCheck = false;
-          this.role = !this.role;
-          if (this.role) this.user = this.whites;
-          else this.user = this.blacks;
-          console.log('check prevented' + this.isCheck + ' ' + this.role);
-          let paths = this.checkMate(this.role);
-          if (paths.length === 0) {
-            alert('checkmate');
-          }
-          this.reset();
-        }
-      } else {
-        // this.user = this.whites;
-        // this.paths = this.blackPaths;
-        this.paths = this.getAllBlackMoves();
-        console.log('bc: ' + this.paths);
-        this.check(this.role, this.paths);
-        if (this.isCheck) {
-          this.grid[this.prevX][this.prevY] = this.copycontent;
-          this.grid[x][y] = ' ';
-          console.log('check not prevented' + this.isCheck + ' ' + this.role);
-          this.reset();
-        } else {
-          this.isCheck = false;
-          this.role = !this.role;
-          if (this.role) this.user = this.whites;
-          else this.user = this.blacks;
-          console.log('check prevented' + this.isCheck + ' ' + this.role);
-          this.reset();
-        }
-      }
+      this.statusMessage = `${this.turnLabel} to move`;
     }
   }
 
-  selected(val: string, x: number, y: number, bool: boolean): void {
-    // console.log(this.boolean);
-
-    if (bool == false) {
-      // console.warn('after copied: ' + this.paths);
-      // console.log('black: ' + this.blackPaths);
-      // console.log('white: ' + this.whitePaths);
-
-      this.copycontent = val;
-
-      if (this.role) this.user = this.whites;
-      else this.user = this.blacks;
-
-      this.paths = [];
-
-      if (!this.role) {
-        this.user = this.blacks;
-        // this.paths = this.whitePaths;
-        this.paths = this.getAllWhiteMoves();
-      } else {
-        this.user = this.whites;
-        // this.paths = this.blackPaths;
-        this.paths = this.getAllBlackMoves();
-      }
-
-      // console.log(this.boolean);
-
-      this.prevX = x;
-      this.prevY = y;
-      // console.log(val + ' at ' + x + ',' + y);
-      this.pause = true;
-
-      this.reset();
-
-      if (val === 'p') {
-        this.getWhitePawnMoves(x, y);
-      } else if (val === 'P') {
-        this.getBlackPawnMoves(x, y);
-      } else if (val === 'r') {
-        this.getWhiteRookMoves(x, y);
-      } else if (val === 'R') {
-        this.getBlackRookMoves(x, y);
-      } else if (val === 'b') {
-        this.getWhiteBishopMoves(x, y);
-      } else if (val === 'B') {
-        this.getBlackBishopMoves(x, y);
-      } else if (val === 'q') {
-        this.getWhiteQueenMoves(x, y);
-      } else if (val === 'Q') {
-        this.getBlackQueenMoves(x, y);
-      } else if (val === 'k') {
-        this.getWhiteKingMoves(x, y);
-      } else if (val === 'K') {
-        this.getBlackKingMoves(x, y);
-      } else if (val === 'n') {
-        this.getWhiteKnightMoves(x, y);
-      } else if (val === 'N') {
-        this.getBlackKnightMoves(x, y);
-      }
-    } else {
-      // console.log(val + ' at ' + x + ',' + y);
-      // console.log(bool);
-
-      this.pause = false;
-      if (this.grid[x][y] !== ' ') this.kills.push(this.grid[x][y]);
-      console.log('kills: ' + this.kills);
-
-      this.grid[x][y] = this.copycontent;
-      this.grid[this.prevX][this.prevY] = ' ';
-      this.role = !this.role;
-
-      // console.error('after kept: ' + this.paths);
-      // console.log('black: ' + this.blackPaths);
-      // console.log('white: ' + this.whitePaths);
-      this.paths = [];
-      if (!this.role) {
-        this.user = this.blacks;
-        // this.paths = this.whitePaths;
-        this.paths = this.getAllWhiteMoves();
-        // console.log('adsfadfas: ' + this.paths);
-        this.check(this.role, this.paths);
-      } else {
-        this.user = this.whites;
-        // this.paths = this.blackPaths;
-        this.paths = this.getAllBlackMoves();
-        this.check(this.role, this.paths);
-      }
-      console.log('ischeck ' + this.isCheck);
-
-      // this.blackPaths = [];
-      // this.whitePaths = [];
-
-      // this.getAllWhiteMoves();
-
-      // this.getAllBlackMoves();
-      this.reset();
-      // console.log(this.grid);
-    }
+  private clearSelection(): void {
+    this.selectedSquare = null;
+    this.legalTargets = [];
   }
 
-  checkMate(role: boolean) {
-    if (role === false) {
-      let blackkingMoves: number[][] = this.getBlackKingMoves(
-        this.kingX,
-        this.kingY
-      );
-      let whitefuture: string[] = this.getAllWhiteMoves();
-      // console.log('black king moves: ' + blackkingMoves);
-      let paths = blackkingMoves.filter((val) => {
-        let str = val[0] + '' + val[1];
-        return !whitefuture.includes(str);
-      });
-      // this.clickedWhenCheck('K', this.kingX, this.kingY, false);
-      console.log(paths);
-      return paths;
-    } else {
-      let whitekingMoves: number[][] = this.getWhiteKingMoves(
-        this.kingX,
-        this.kingY
-      );
-      let blackfuture: string[] = this.getAllBlackMoves();
-      // console.log('black king moves: ' + whitekingMoves);
-      let paths = whitekingMoves.filter((val) => {
-        let str = val[0] + '' + val[1];
-        return !blackfuture.includes(str);
-      });
-      // console.log('white king moves: ' + whitekingMoves);
-      // console.log(this.boolean);
-      return paths;
-    }
+  private isCurrentPlayerPiece(piece: string): boolean {
+    const pieceColor = piece === piece.toLowerCase() ? 'w' : 'b';
+    return this.game.turn() === pieceColor &&
+      (this.playerColor === 'waiting' || this.playerColor === pieceColor);
   }
 
-  check(role: boolean, paths: string[]): void {
-    // console.log(this.grid);
-
-    let kingIndex = '';
-    if (role === false) {
-      this.grid.forEach((row, i) => {
-        row.forEach((col, j) => {
-          if (col === 'K') {
-            this.kingX = i;
-            this.kingY = j;
-            kingIndex += i;
-            kingIndex += j;
-          }
-        });
-      });
-      // console.log(kingIndex);
-
-      if (paths.includes(kingIndex)) {
-        this.isCheck = true;
-        alert('check');
-      } else {
-        this.isCheck = false;
-      }
-    } else {
-      this.grid.forEach((row, i) => {
-        row.forEach((col, j) => {
-          if (col === 'k') {
-            this.kingX = i;
-            this.kingY = j;
-            kingIndex += i;
-            kingIndex += j;
-          }
-        });
-      });
-      // console.log(kingIndex);
-
-      if (paths.includes(kingIndex)) {
-        this.isCheck = true;
-        alert('check');
-      } else {
-        this.isCheck = false;
-      }
-    }
+  private isPromotionMove(from: string, to: string): boolean {
+    const row = this.ranks.indexOf(Number(from[1]));
+    const column = this.files.indexOf(from[0]);
+    const piece = this.grid[row][column];
+    return piece.toLowerCase() === 'p' && (to[1] === '1' || to[1] === '8');
   }
 
-  getAllWhiteMoves() {
-    this.whitePaths = [];
-    let moves: number[][] = [];
-    for (let i = 0; i < 8; i++) {
-      for (let j = 0; j < 8; j++) {
-        if (this.grid[i][j] === 'p') {
-          moves = this.getWhitePawnMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('w pawns:' + moves);
-        } else if (this.grid[i][j] === 'r') {
-          moves = this.getWhiteRookMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('w rooks: ' + moves);
-        } else if (this.grid[i][j] === 'b') {
-          moves = this.getWhiteBishopMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('bishops: ' + moves);
-        } else if (this.grid[i][j] === 'q') {
-          moves = this.getWhiteQueenMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('queens: ' + moves);
-        } else if (this.grid[i][j] === 'k') {
-          moves = this.getWhiteKingMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('w kings: ' + moves);
-        } else if (this.grid[i][j] === 'n') {
-          moves = this.getWhiteKnightMoves(i, j);
-          this.copyToWhite(moves);
-          // console.log('knights: ' + moves);
-        }
-      }
-    }
-    // console.log('whites:' + this.whitePaths);
-    return this.whitePaths;
+  private toSquare(row: number, column: number): string {
+    return `${this.files[column]}${this.ranks[row]}`;
   }
 
-  copyToWhite(moves: number[][]) {
-    for (let i = 0; i < moves.length; i++) {
-      let val = moves[i][0].toString() + moves[i][1].toString();
-      if (!this.whitePaths.includes(val)) this.whitePaths.push(val);
-    }
-  }
-
-  copyToBlack(moves: number[][]) {
-    for (let i = 0; i < moves.length; i++) {
-      let val = moves[i][0].toString() + moves[i][1].toString();
-      if (!this.blackPaths.includes(val)) this.blackPaths.push(val);
-    }
-  }
-
-  getAllBlackMoves() {
-    this.blackPaths = [];
-    let moves: number[][] = [];
-    for (let i = 0; i < 8; i++) {
-      for (let j = 0; j < 8; j++) {
-        if (this.grid[i][j] === 'P') {
-          moves = this.getBlackPawnMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('b pawns:' + moves);
-        } else if (this.grid[i][j] === 'R') {
-          moves = this.getBlackRookMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('rooks: ' + moves);
-        } else if (this.grid[i][j] === 'B') {
-          moves = this.getBlackBishopMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('bishops: ' + moves);
-        } else if (this.grid[i][j] === 'Q') {
-          moves = this.getBlackQueenMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('queens: ' + moves);
-        }
-        if (this.grid[i][j] === 'K') {
-          moves = this.getBlackKingMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('b kings: ' + moves);
-        } else if (this.grid[i][j] === 'N') {
-          moves = this.getBlackKnightMoves(i, j);
-          this.copyToBlack(moves);
-          // console.log('knights: ' + moves);
-        }
-      }
-    }
-    // console.log('blacks:' + this.blackPaths);
-    return this.blackPaths;
-  }
-
-  getWhitePawnMoves(x: number, y: number): number[][] {
-    // console.log('white pawn at ' + x + ',' + y);
-    const moves: number[][] = [];
-    if (
-      x == 1 &&
-      !this.whites.includes(this.grid[x + 1][y]) &&
-      !this.blacks.includes(this.grid[x + 1][y])
-    ) {
-      if (this.grid[x + 1][y] === ' ') {
-        // moves.push([x + 1, y]);
-        this.boolean[x + 1][y] = true;
-      }
-      if (this.grid[x + 2][y] === ' ') {
-        // moves.push([x + 2, y]);
-        this.boolean[x + 2][y] = true;
-      }
-      if (
-        y + 1 < 8 &&
-        this.grid[x + 1][y + 1] !== ' ' &&
-        !this.whites.includes(this.grid[x + 1][y + 1])
-      ) {
-        // if (this.grid[x + 1][y + 1] === 'K') {
-        //   moves.push([x + 1, y + 1]);
-        // }
-        this.boolean[x + 1][y + 1] = true;
-      } else if (
-        y + 1 < 8 &&
-        (this.grid[x + 1][y + 1] === ' ' ||
-          this.whites.includes(this.grid[x + 1][y + 1]))
-      ) {
-        moves.push([x + 1, y + 1]);
-      }
-      if (
-        y - 1 >= 0 &&
-        this.grid[x + 1][y - 1] !== ' ' &&
-        !this.whites.includes(this.grid[x + 1][y - 1])
-      ) {
-        // if (this.grid[x + 1][y - 1] === 'K') {
-        //   moves.push([x + 1, y - 1]);
-        // }
-        this.boolean[x + 1][y - 1] = true;
-      } else if (
-        (y - 1 >= 0 && this.grid[x + 1][y - 1] === ' ') ||
-        this.whites.includes(this.grid[x + 1][y - 1])
-      ) {
-        moves.push([x + 1, y - 1]);
-      }
-    } else if (
-      x + 1 <
-      8
-      // && !this.whites.includes(this.grid[x + 1][y]) &&
-      // !this.blacks.includes(this.grid[x + 1][y])
-    ) {
-      if (this.grid[x + 1][y] === ' ') {
-        // moves.push([x + 1, y]);
-        this.boolean[x + 1][y] = true;
-      }
-      if (
-        y + 1 < 8 &&
-        this.grid[x + 1][y + 1] !== ' ' &&
-        !this.whites.includes(this.grid[x + 1][y + 1])
-      ) {
-        // if (this.grid[x + 1][y + 1] === 'K') {
-        moves.push([x + 1, y + 1]);
-        // }
-        this.boolean[x + 1][y + 1] = true;
-      } else if (
-        y + 1 < 8 &&
-        this.grid[x + 1][y + 1] !== ' ' &&
-        this.whites.includes(this.grid[x + 1][y + 1])
-      ) {
-        moves.push([x + 1, y + 1]);
-      } else if (y + 1 < 8 && this.grid[x + 1][y + 1] === ' ') {
-        moves.push([x + 1, y + 1]);
-      }
-      if (
-        y - 1 >= 0 &&
-        this.grid[x + 1][y - 1] !== ' ' &&
-        !this.whites.includes(this.grid[x + 1][y - 1])
-      ) {
-        // if (this.grid[x + 1][y - 1] === 'K') {
-        moves.push([x + 1, y - 1]);
-        // }
-        this.boolean[x + 1][y - 1] = true;
-      } else if (
-        y - 1 >= 0 &&
-        this.grid[x + 1][y - 1] !== ' ' &&
-        this.whites.includes(this.grid[x + 1][y - 1])
-      ) {
-        moves.push([x + 1, y - 1]);
-      } else if (y - 1 >= 0 && this.grid[x + 1][y - 1] === ' ') {
-        moves.push([x + 1, y - 1]);
-      }
-    }
-
-    return moves;
-    // this.whitePawnMoves = moves;
-  }
-  getBlackPawnMoves(x: number, y: number): number[][] {
-    // console.log('black pawn at ' + x + ',' + y);
-    const moves: number[][] = [];
-    if (
-      x == 6 &&
-      !this.whites.includes(this.grid[x - 1][y]) &&
-      !this.blacks.includes(this.grid[x - 1][y])
-    ) {
-      if (this.grid[x - 1][y] === ' ') {
-        // moves.push([x - 1, y]);
-        this.boolean[x - 1][y] = true;
-      }
-      if (this.grid[x - 2][y] === ' ') {
-        // moves.push([x - 2, y]);
-        this.boolean[x - 2][y] = true;
-      }
-      if (
-        y + 1 < 8 &&
-        this.grid[x - 1][y + 1] !== ' ' &&
-        !this.blacks.includes(this.grid[x - 1][y + 1])
-      ) {
-        this.boolean[x - 1][y + 1] = true;
-      } else if (
-        y + 1 < 8 &&
-        (this.grid[x - 1][y + 1] === ' ' ||
-          this.blacks.includes(this.grid[x - 1][y + 1]))
-      ) {
-        moves.push([x - 1, y + 1]);
-      }
-      if (
-        y - 1 >= 0 &&
-        this.grid[x - 1][y - 1] !== ' ' &&
-        !this.blacks.includes(this.grid[x - 1][y - 1])
-      ) {
-        // moves.push([x - 1, y - 1]);
-        this.boolean[x - 1][y - 1] = true;
-      } else if (
-        (y - 1 >= 0 && this.grid[x - 1][y - 1] === ' ') ||
-        this.blacks.includes(this.grid[x - 1][y - 1])
-      ) {
-        moves.push([x - 1, y - 1]);
-      }
-    } else if (
-      x - 1 >=
-      0
-      // && !this.whites.includes(this.grid[x - 1][y]) &&
-      // !this.blacks.includes(this.grid[x - 1][y])
-    ) {
-      if (this.grid[x - 1][y] === ' ') {
-        // moves.push([x - 1, y]);
-        this.boolean[x - 1][y] = true;
-      }
-      if (
-        y + 1 < 8 &&
-        this.grid[x - 1][y + 1] !== ' ' &&
-        !this.blacks.includes(this.grid[x - 1][y + 1])
-      ) {
-        moves.push([x - 1, y + 1]);
-
-        this.boolean[x - 1][y + 1] = true;
-      } else if (
-        y + 1 < 8 &&
-        this.grid[x - 1][y + 1] !== ' ' &&
-        this.blacks.includes(this.grid[x - 1][y + 1])
-      ) {
-        moves.push([x - 1, y + 1]);
-      } else if (y + 1 < 8 && this.grid[x - 1][y + 1] === ' ') {
-        moves.push([x - 1, y + 1]);
-      }
-      if (
-        y - 1 >= 0 &&
-        this.grid[x - 1][y - 1] !== ' ' &&
-        !this.blacks.includes(this.grid[x - 1][y - 1])
-      ) {
-        moves.push([x - 1, y - 1]);
-        this.boolean[x - 1][y - 1] = true;
-      } else if (
-        y - 1 >= 0 &&
-        this.grid[x - 1][y - 1] !== ' ' &&
-        this.blacks.includes(this.grid[x - 1][y - 1])
-      ) {
-        moves.push([x - 1, y - 1]);
-      } else if (y - 1 >= 0 && this.grid[x - 1][y - 1] === ' ') {
-        moves.push([x - 1, y - 1]);
-      }
-    }
-    // this.blackPawnMoves = moves;
-    return moves;
-    // console.log(moves);
-  }
-  getBlackKingMoves(x: number, y: number): number[][] {
-    const moves = [];
-
-    if (x - 1 >= 0) {
-      if (this.grid[x - 1][y] === ' ') {
-        moves.push([x - 1, y]);
-        this.boolean[x - 1][y] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x - 1][y])) {
-          moves.push([x - 1, y]);
-          this.boolean[x - 1][y] = true;
-        }
-      }
-    }
-    // right
-    if (y + 1 < 8) {
-      if (this.grid[x][y + 1] === ' ') {
-        moves.push([x, y + 1]);
-        this.boolean[x][y + 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x][y + 1])) {
-          moves.push([x, y + 1]);
-          this.boolean[x][y + 1] = true;
-        }
-      }
-    }
-    // bottom
-
-    if (x + 1 < 8) {
-      if (this.grid[x + 1][y] === ' ') {
-        moves.push([x + 1, y]);
-        this.boolean[x + 1][y] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x + 1][y])) {
-          moves.push([x + 1, y]);
-          this.boolean[x + 1][y] = true;
-        }
-      }
-    }
-    // left
-    if (y - 1 >= 0) {
-      if (this.grid[x][y - 1] === ' ') {
-        moves.push([x, y - 1]);
-        this.boolean[x][y - 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x][y - 1])) {
-          moves.push([x, y - 1]);
-          this.boolean[x][y - 1] = true;
-        }
-      }
-    }
-    if (x - 1 >= 0 && y + 1 < 8) {
-      if (this.grid[x - 1][y + 1] === ' ') {
-        moves.push([x - 1, y + 1]);
-        this.boolean[x - 1][y + 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x - 1][y + 1])) {
-          moves.push([x - 1, y + 1]);
-          this.boolean[x - 1][y + 1] = true;
-        }
-      }
-    }
-    // right bottom
-    if (y + 1 < 8 && x + 1 < 8) {
-      if (this.grid[x + 1][y + 1] === ' ') {
-        moves.push([x + 1, y + 1]);
-        this.boolean[x + 1][y + 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x + 1][y + 1])) {
-          moves.push([x + 1, y + 1]);
-          this.boolean[x + 1][y + 1] = true;
-        }
-      }
-    }
-    // left bottom
-
-    if (x + 1 < 8 && y - 1 >= 0) {
-      if (this.grid[x + 1][y - 1] === ' ') {
-        moves.push([x + 1, y - 1]);
-        this.boolean[x + 1][y - 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x + 1][y - 1])) {
-          moves.push([x + 1, y - 1]);
-          this.boolean[x + 1][y - 1] = true;
-        }
-      }
-    }
-    // top left
-    if (y - 1 >= 0 && x - 1 >= 0) {
-      if (this.grid[x - 1][y - 1] === ' ') {
-        moves.push([x - 1, y - 1]);
-        this.boolean[x - 1][y - 1] = true;
-      } else {
-        if (!this.blacks.includes(this.grid[x - 1][y - 1])) {
-          moves.push([x - 1, y - 1]);
-          this.boolean[x - 1][y - 1] = true;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getWhiteRookMoves(x: number, y: number) {
-    const moves = [];
-    // top
-    if (x - 1 >= 0) {
-      for (let i = x - 1; i >= 0; i--) {
-        if (this.grid[i][y] === ' ') {
-          moves.push([i, y]);
-          this.boolean[i][y] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][y])) {
-            if (this.grid[i][y] === 'K') {
-              moves.push([i, y]);
-              for (let k = i - 1; i >= 0; i--) {
-                if (this.grid[k][y] === ' ') {
-                  moves.push([k, y]);
-                } else {
-                  break;
-                }
-              }
-            } else {
-              // moves.push([i, y]);
-              this.boolean[i][y] = true;
-            }
-          }
-          break;
-        }
-      }
-    }
-    // right
-    if (y + 1 < 8) {
-      for (let j = y + 1; j < 8; j++) {
-        if (this.grid[x][j] === ' ') {
-          moves.push([x, j]);
-          this.boolean[x][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[x][j])) {
-            if (this.grid[x][j] === 'K') {
-              moves.push([x, j]);
-              for (let k = j + 1; k < 8; k++) {
-                if (this.grid[x][k] === ' ') {
-                  moves.push([x, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-            moves.push([x, j]);
-            this.boolean[x][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    // bottom
-
-    if (x + 1 < 8) {
-      for (let i = x + 1; i < 8; i++) {
-        if (this.grid[i][y] === ' ') {
-          moves.push([i, y]);
-          this.boolean[i][y] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][y])) {
-            if (this.grid[i][y] === 'K') {
-              moves.push([i, y]);
-              for (let k = i + 1; k < 8; k++) {
-                if (this.grid[k][y] === ' ') {
-                  moves.push([k, y]);
-                } else {
-                  break;
-                }
-              }
-            }
-            moves.push([i, y]);
-            this.boolean[i][y] = true;
-          } else {
-            moves.push([i, y]);
-          }
-          break;
-        }
-      }
-    }
-    // left
-    if (y - 1 >= 0) {
-      for (let j = y - 1; j >= 0; j--) {
-        if (this.grid[x][j] === ' ') {
-          moves.push([x, j]);
-          this.boolean[x][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[x][j])) {
-            if (this.grid[x][j] === 'K') {
-              moves.push([x, j]);
-              for (let k = j - 1; k >= 0; k--) {
-                if (this.grid[x][k] === ' ') {
-                  moves.push([x, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-            moves.push([x, j]);
-            this.boolean[x][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getBlackRookMoves(x: number, y: number) {
-    const moves = [];
-    // top
-    if (x - 1 >= 0) {
-      for (let i = x - 1; i >= 0; i--) {
-        if (this.grid[i][y] === ' ') {
-          moves.push([i, y]);
-          this.boolean[i][y] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][y])) {
-            if (this.grid[i][y] === 'k') {
-              moves.push([i, y]);
-              for (let k = i - 1; i >= 0; i--) {
-                if (this.grid[k][y] === ' ') {
-                  moves.push([k, y]);
-                } else {
-                  break;
-                }
-              }
-            } else {
-              this.boolean[i][y] = true;
-              // moves.push([i, y]);
-            }
-          }
-          break;
-        }
-      }
-    }
-    // right
-    if (y + 1 < 8) {
-      for (let j = y + 1; j < 8; j++) {
-        if (this.grid[x][j] === ' ') {
-          moves.push([x, j]);
-          this.boolean[x][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[x][j])) {
-            if (this.grid[x][j] === 'k') {
-              moves.push([x, j]);
-              for (let k = j + 1; k < 8; k++) {
-                if (this.grid[x][k] === ' ') {
-                  moves.push([x, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-            // moves.push([x, j]);
-            this.boolean[x][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    // bottom
-
-    if (x + 1 < 8) {
-      for (let i = x + 1; i < 8; i++) {
-        if (this.grid[i][y] === ' ') {
-          moves.push([i, y]);
-          this.boolean[i][y] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][y])) {
-            if (this.grid[i][y] === 'k') {
-              moves.push([i, y]);
-              for (let k = i + 1; k < 8; k++) {
-                if (this.grid[k][y] === ' ') {
-                  moves.push([k, y]);
-                } else {
-                  break;
-                }
-              }
-            }
-            moves.push([i, y]);
-            this.boolean[i][y] = true;
-          }
-          break;
-        }
-      }
-    }
-    // left
-    if (y - 1 >= 0) {
-      for (let j = y - 1; j >= 0; j--) {
-        if (this.grid[x][j] === ' ') {
-          moves.push([x, j]);
-          this.boolean[x][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[x][j])) {
-            if (this.grid[x][j] === 'k') {
-              moves.push([x, j]);
-              for (let k = j - 1; k >= 0; k--) {
-                if (this.grid[x][k] === ' ') {
-                  moves.push([x, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-            // moves.push([x, j]);
-            this.boolean[x][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getWhiteBishopMoves(x: number, y: number) {
-    const moves = [];
-    // top right
-    if (x - 1 >= 0 && y + 1 < 8) {
-      for (let i = x - 1, j = y + 1; i >= 0 && j < 8; i--, j++) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][j])) {
-            if (this.grid[i][j] === 'K') {
-              moves.push([i, j]);
-              for (let k = i - 1, l = j + 1; k >= 0 && l < 8; k--, l++) {
-                if (this.grid[k][l] === ' ') {
-                  moves.push([k, l]);
-                } else {
-                  break;
-                }
-              }
-            }
-            this.boolean[i][j] = true;
-          } else {
-            moves.push([i, j]);
-          }
-          break;
-        }
-      }
-    }
-    // right bottom
-    if (y + 1 < 8 && x + 1 < 8) {
-      for (let j = y + 1, i = x + 1; j < 8 && i < 8; j++, i++) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][j])) {
-            if (this.grid[i][j] === 'K') {
-              moves.push([i, j]);
-              for (let k = j + 1, l = i + 1; k < 8 && l < 8; k++, l++) {
-                if (this.grid[l][k] === ' ') {
-                  moves.push([l, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-
-            this.boolean[i][j] = true;
-          } else {
-            moves.push([i, j]);
-          }
-          break;
-        }
-      }
-    }
-    // left bottom
-
-    if (x + 1 < 8 && y - 1 >= 0) {
-      for (let i = x + 1, j = y - 1; i < 8 && j >= 0; i++, j--) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][j])) {
-            if (this.grid[i][j] === 'K') {
-              moves.push([i, j]);
-              for (let k = i + 1, l = j - 1; k < 8 && l >= 0; k++, l--) {
-                if (this.grid[k][l] === ' ') {
-                  moves.push([k, l]);
-                } else {
-                  break;
-                }
-              }
-            }
-            // moves.push([i, j]);
-            this.boolean[i][j] = true;
-          } else {
-            moves.push([i, j]);
-          }
-          break;
-        }
-      }
-    }
-    // top left
-    if (y - 1 >= 0 && x - 1 >= 0) {
-      for (let j = y - 1, i = x - 1; j >= 0 && i >= 0; j--, i--) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.whites.includes(this.grid[i][j])) {
-            if (this.grid[i][j] === 'K') {
-              moves.push([i, j]);
-              for (let k = j - 1, l = i - 1; k >= 0 && l >= 0; k--, l--) {
-                if (this.grid[l][k] === ' ') {
-                  moves.push([l, k]);
-                } else {
-                  break;
-                }
-              }
-            }
-            this.boolean[i][j] = true;
-          } else {
-            moves.push([i, j]);
-          }
-          break;
-        }
-      }
-    }
-    return moves;
-    // console.log(this.boolean);
-  }
-
-  getBlackBishopMoves(x: number, y: number) {
-    const moves = [];
-    // top right
-    if (x - 1 >= 0 && y + 1 < 8) {
-      for (let i = x - 1, j = y + 1; i >= 0 && j < 8; i--, j++) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][j])) {
-            moves.push([i, j]);
-            this.boolean[i][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    // right bottom
-    if (y + 1 < 8 && x + 1 < 8) {
-      for (let j = y + 1, i = x + 1; j < 8 && i < 8; j++, i++) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][j])) {
-            moves.push([i, j]);
-            this.boolean[i][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    // left bottom
-
-    if (x + 1 < 8 && y - 1 >= 0) {
-      for (let i = x + 1, j = y - 1; i < 8 && j >= 0; i++, j--) {
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][j])) {
-            moves.push([i, j]);
-            this.boolean[i][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    // top left
-    if (y - 1 >= 0 && x - 1 >= 0) {
-      for (let j = y - 1, i = x - 1; j >= 0 && i >= 0; j--, i--) {
-        // console.log(i, j);
-
-        if (this.grid[i][j] === ' ') {
-          moves.push([i, j]);
-          this.boolean[i][j] = true;
-        } else {
-          if (!this.blacks.includes(this.grid[i][j])) {
-            moves.push([i, j]);
-            this.boolean[i][j] = true;
-          }
-          break;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getWhiteQueenMoves(x: number, y: number) {
-    const moves: number[][] = [];
-
-    let move = this.getWhiteRookMoves(x, y);
-    move.forEach((element) => {
-      moves.push(element);
+  private connectToGame(): void {
+    this.roomId = new URLSearchParams(window.location.search).get('room') || 'main';
+    const serverUrl = window.location.port === '4200' ? 'http://localhost:8080' : undefined;
+    this.socket = io(serverUrl, {
+      auth: { roomId: this.roomId },
+      transports: ['websocket', 'polling'],
     });
-    move = this.getWhiteBishopMoves(x, y);
-    move.forEach((element) => {
-      moves.push(element);
+
+    this.socket.on('connect', () => {
+      this.connectionStatus = 'Online';
+      this.socket.emit('join-game', { roomId: this.roomId, name: 'Player' });
     });
-    return moves;
-  }
-
-  getBlackQueenMoves(x: number, y: number) {
-    const moves: number[][] = [];
-
-    let move = this.getBlackRookMoves(x, y);
-    move.forEach((element) => {
-      moves.push(element);
+    this.socket.on('player-assigned', ({ color, roomId }: { color: 'w' | 'b' | 'spectator'; roomId: string }) => {
+      this.playerColor = color;
+      this.roomId = roomId;
     });
-    move = this.getBlackBishopMoves(x, y);
-    move.forEach((element) => {
-      moves.push(element);
+    this.socket.on('game-state', (state: ServerState) => this.applyServerState(state));
+    this.socket.on('move-rejected', ({ message }: { message: string }) => {
+      this.clearSelection();
+      this.statusMessage = message;
     });
-    return moves;
+    this.socket.on('disconnect', () => {
+      this.connectionStatus = 'Offline';
+      this.playerColor = 'waiting';
+      this.statusMessage = 'Connection lost';
+    });
   }
 
-  getWhiteKingMoves(x: number, y: number) {
-    const moves: number[][] = [];
-    // top
-    if (x - 1 >= 0) {
-      if (this.grid[x - 1][y] === ' ') {
-        moves.push([x - 1, y]);
-        this.boolean[x - 1][y] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x - 1][y])) {
-          moves.push([x - 1, y]);
-          this.boolean[x - 1][y] = true;
-        }
-      }
-    }
-    // right
-    if (y + 1 < 8) {
-      if (this.grid[x][y + 1] === ' ') {
-        moves.push([x, y + 1]);
-        this.boolean[x][y + 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x][y + 1])) {
-          moves.push([x, y + 1]);
-          this.boolean[x][y + 1] = true;
-        }
-      }
-    }
-    // bottom
+  private applyServerState(state: ServerState): void {
+    this.game.load(state.fen);
+    this.moveHistory = state.history || [];
+    this.capturedWhite = state.capturedWhite || [];
+    this.capturedBlack = state.capturedBlack || [];
+    this.lastMove = this.moveHistory.length
+      ? { from: this.moveHistory[this.moveHistory.length - 1].from, to: this.moveHistory[this.moveHistory.length - 1].to }
+      : null;
+    this.onlinePlayers = state.players.length;
+    this.isCheck = state.check;
+    this.isGameOver = state.gameOver;
+    this.isDraw = state.draw;
+    this.clearSelection();
+    this.syncBoard();
 
-    if (x + 1 < 8) {
-      if (this.grid[x + 1][y] === ' ') {
-        moves.push([x + 1, y]);
-        this.boolean[x + 1][y] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x + 1][y])) {
-          moves.push([x + 1, y]);
-          this.boolean[x + 1][y] = true;
-        }
-      }
+    if (this.playerColor === 'spectator') {
+      this.statusMessage = 'Spectating this game';
+    } else if (this.onlinePlayers < 2) {
+      this.statusMessage = 'Waiting for the second player';
     }
-    // left
-    if (y - 1 >= 0) {
-      if (this.grid[x][y - 1] === ' ') {
-        moves.push([x, y - 1]);
-        this.boolean[x][y - 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x][y - 1])) {
-          moves.push([x, y - 1]);
-          this.boolean[x][y - 1] = true;
-        }
-      }
-    }
-    // top right
-    if (x - 1 >= 0 && y + 1 < 8) {
-      if (this.grid[x - 1][y + 1] === ' ') {
-        moves.push([x - 1, y + 1]);
-        this.boolean[x - 1][y + 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x - 1][y + 1])) {
-          moves.push([x - 1, y + 1]);
-          this.boolean[x - 1][y + 1] = true;
-        }
-      }
-    }
-    // right bottom
-    if (y + 1 < 8 && x + 1 < 8) {
-      if (this.grid[x + 1][y + 1] === ' ') {
-        moves.push([x + 1, y + 1]);
-        this.boolean[x + 1][y + 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x + 1][y + 1])) {
-          moves.push([x + 1, y + 1]);
-          this.boolean[x + 1][y + 1] = true;
-        }
-      }
-    }
-    // left bottom
-
-    if (x + 1 < 8 && y - 1 >= 0) {
-      if (this.grid[x + 1][y - 1] === ' ') {
-        moves.push([x + 1, y - 1]);
-        this.boolean[x + 1][y - 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x + 1][y - 1])) {
-          moves.push([x + 1, y - 1]);
-          this.boolean[x + 1][y - 1] = true;
-        }
-      }
-    }
-    // top left
-    if (y - 1 >= 0 && x - 1 >= 0) {
-      if (this.grid[x - 1][y - 1] === ' ') {
-        moves.push([x - 1, y - 1]);
-        this.boolean[x - 1][y - 1] = true;
-      } else {
-        if (!this.whites.includes(this.grid[x - 1][y - 1])) {
-          moves.push([x - 1, y - 1]);
-          this.boolean[x - 1][y - 1] = true;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getBlackKnightMoves(x: number, y: number) {
-    const moves: number[][] = [];
-    // top left right
-
-    if (x - 2 >= 0) {
-      if (y - 1 >= 0) {
-        if (
-          this.grid[x - 2][y - 1] === ' ' ||
-          !this.blacks.includes(this.grid[x - 2][y - 1])
-        ) {
-          moves.push([x - 2, y - 1]);
-          this.boolean[x - 2][y - 1] = true;
-        }
-      }
-      if (y + 1 < 8) {
-        if (
-          this.grid[x - 2][y + 1] === ' ' ||
-          !this.blacks.includes(this.grid[x - 2][y + 1])
-        ) {
-          moves.push([x - 2, y + 1]);
-          this.boolean[x - 2][y + 1] = true;
-        }
-      }
-    }
-
-    // top right left
-    if (x + 2 < 8) {
-      if (y - 1 >= 0) {
-        if (
-          this.grid[x + 2][y - 1] === ' ' ||
-          !this.blacks.includes(this.grid[x + 2][y - 1])
-        ) {
-          moves.push([x + 2, y - 1]);
-          this.boolean[x + 2][y - 1] = true;
-        }
-      }
-      if (y + 1 < 8) {
-        if (
-          this.grid[x + 2][y + 1] === ' ' ||
-          !this.blacks.includes(this.grid[x + 2][y + 1])
-        ) {
-          moves.push([x + 2, y + 1]);
-          this.boolean[x + 2][y + 1] = true;
-        }
-      }
-    }
-    // left top right
-    if (y - 2 >= 0) {
-      if (x - 1 >= 0) {
-        if (
-          this.grid[x - 1][y - 2] === ' ' ||
-          !this.blacks.includes(this.grid[x - 1][y - 2])
-        ) {
-          moves.push([x - 1, y - 2]);
-          this.boolean[x - 1][y - 2] = true;
-        }
-      }
-      if (x + 1 < 8) {
-        if (
-          this.grid[x + 1][y - 2] === ' ' ||
-          !this.blacks.includes(this.grid[x + 1][y - 2])
-        ) {
-          moves.push([x + 1, y - 2]);
-          this.boolean[x + 1][y - 2] = true;
-        }
-      }
-    }
-    // right top left
-    if (y + 2 < 8) {
-      if (x - 1 >= 0) {
-        if (
-          this.grid[x - 1][y + 2] === ' ' ||
-          !this.blacks.includes(this.grid[x - 1][y + 2])
-        ) {
-          moves.push([x - 1, y + 2]);
-          this.boolean[x - 1][y + 2] = true;
-        }
-      }
-      if (x + 1 < 8) {
-        if (
-          this.grid[x + 1][y + 2] === ' ' ||
-          !this.blacks.includes(this.grid[x + 1][y + 2])
-        ) {
-          moves.push([x + 1, y + 2]);
-          this.boolean[x + 1][y + 2] = true;
-        }
-      }
-    }
-    return moves;
-  }
-
-  getWhiteKnightMoves(x: number, y: number) {
-    const moves: number[][] = [];
-    if (x - 2 >= 0) {
-      if (y - 1 >= 0) {
-        if (
-          this.grid[x - 2][y - 1] === ' ' ||
-          !this.whites.includes(this.grid[x - 2][y - 1])
-        ) {
-          moves.push([x - 2, y - 1]);
-          this.boolean[x - 2][y - 1] = true;
-        }
-      }
-      if (y + 1 < 8) {
-        if (
-          this.grid[x - 2][y + 1] === ' ' ||
-          !this.whites.includes(this.grid[x - 2][y + 1])
-        ) {
-          moves.push([x - 2, y + 1]);
-          this.boolean[x - 2][y + 1] = true;
-        }
-      }
-    }
-
-    // top right left
-    if (x + 2 < 8) {
-      if (y - 1 >= 0) {
-        if (
-          this.grid[x + 2][y - 1] === ' ' ||
-          !this.whites.includes(this.grid[x + 2][y - 1])
-        ) {
-          moves.push([x + 2, y - 1]);
-          this.boolean[x + 2][y - 1] = true;
-        }
-      }
-      if (y + 1 < 8) {
-        if (
-          this.grid[x + 2][y + 1] === ' ' ||
-          !this.whites.includes(this.grid[x + 2][y + 1])
-        ) {
-          moves.push([x + 2, y + 1]);
-          this.boolean[x + 2][y + 1] = true;
-        }
-      }
-    }
-    // left top right
-    if (y - 2 >= 0) {
-      if (x - 1 >= 0) {
-        if (
-          this.grid[x - 1][y - 2] === ' ' ||
-          !this.whites.includes(this.grid[x - 1][y - 2])
-        ) {
-          moves.push([x - 1, y - 2]);
-          this.boolean[x - 1][y - 2] = true;
-        }
-      }
-      if (x + 1 < 8) {
-        if (
-          this.grid[x + 1][y - 2] === ' ' ||
-          !this.whites.includes(this.grid[x + 1][y - 2])
-        ) {
-          moves.push([x + 1, y - 2]);
-          this.boolean[x + 1][y - 2] = true;
-        }
-      }
-    }
-    // right top left
-    if (y + 2 < 8) {
-      if (x - 1 >= 0) {
-        if (
-          this.grid[x - 1][y + 2] === ' ' ||
-          !this.whites.includes(this.grid[x - 1][y + 2])
-        ) {
-          moves.push([x - 1, y + 2]);
-          this.boolean[x - 1][y + 2] = true;
-        }
-      }
-      if (x + 1 < 8) {
-        if (
-          this.grid[x + 1][y + 2] === ' ' ||
-          !this.whites.includes(this.grid[x + 1][y + 2])
-        ) {
-          moves.push([x + 1, y + 2]);
-          this.boolean[x + 1][y + 2] = true;
-        }
-      }
-    }
-    return moves;
   }
 }
