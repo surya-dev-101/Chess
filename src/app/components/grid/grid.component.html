@@ -31,28 +31,28 @@
       </div>
 
       <div class="board-wrap">
-        <div class="rank-labels" aria-hidden="true"><span *ngFor="let rank of ranks">{{ rank }}</span></div>
+        <div class="rank-labels" aria-hidden="true"><span *ngFor="let rank of displayRanks">{{ rank }}</span></div>
         <div class="board" role="grid" aria-label="Chessboard">
-          <div class="board-row" *ngFor="let row of grid; let rowIndex = index">
+          <div class="board-row" *ngFor="let rank of displayRanks">
             <button
-              *ngFor="let piece of row; let columnIndex = index"
+              *ngFor="let file of displayFiles"
               type="button"
               class="square"
-              [class.light-square]="isLightSquare(rowIndex, columnIndex)"
-              [class.dark-square]="!isLightSquare(rowIndex, columnIndex)"
-              [class.selected]="isSelected(files[columnIndex] + ranks[rowIndex])"
-              [class.legal-target]="isLegalTarget(files[columnIndex] + ranks[rowIndex])"
-              [class.last-move]="isLastMove(files[columnIndex] + ranks[rowIndex])"
-              [attr.aria-label]="piece ? getPieceLabel(piece) + ' on ' + files[columnIndex] + ranks[rowIndex] : 'Empty square ' + files[columnIndex] + ranks[rowIndex]"
-              (click)="onSquareClick(rowIndex, columnIndex)"
+              [class.light-square]="isLightSquare(ranks.indexOf(rank), files.indexOf(file))"
+              [class.dark-square]="!isLightSquare(ranks.indexOf(rank), files.indexOf(file))"
+              [class.selected]="isSelected(file + rank)"
+              [class.legal-target]="isLegalTarget(file + rank)"
+              [class.last-move]="isLastMove(file + rank)"
+              [attr.aria-label]="getPieceAt(file + rank) ? getPieceLabel(getPieceAt(file + rank)) + ' on ' + file + rank : 'Empty square ' + file + rank"
+              (click)="onSquareClick(file, rank)"
             >
-              <span class="capture-marker" *ngIf="isLegalTarget(files[columnIndex] + ranks[rowIndex]) && piece"></span>
-              <span class="move-marker" *ngIf="isLegalTarget(files[columnIndex] + ranks[rowIndex]) && !piece"></span>
-              <img *ngIf="piece" [src]="'assets/images/' + getPieceImage(piece)" [alt]="getPieceLabel(piece)" />
+              <span class="capture-marker" *ngIf="isLegalTarget(file + rank) && getPieceAt(file + rank)"></span>
+              <span class="move-marker" *ngIf="isLegalTarget(file + rank) && !getPieceAt(file + rank)"></span>
+              <img *ngIf="getPieceAt(file + rank)" [src]="'assets/images/' + getPieceImage(getPieceAt(file + rank))" [alt]="getPieceLabel(getPieceAt(file + rank))" />
             </button>
           </div>
         </div>
-        <div class="file-labels" aria-hidden="true"><span *ngFor="let file of files">{{ file }}</span></div>
+        <div class="file-labels" aria-hidden="true"><span *ngFor="let file of displayFiles">{{ file }}</span></div>
       </div>
     </div>
 

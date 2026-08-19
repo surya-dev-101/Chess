@@ -80,6 +80,14 @@ export class GridComponent {
     return Math.ceil(this.moveHistory.length / 2);
   }
 
+  get displayFiles(): string[] {
+    return this.playerColor === 'b' ? [...this.files].reverse() : this.files;
+  }
+
+  get displayRanks(): number[] {
+    return this.playerColor === 'b' ? [...this.ranks].reverse() : this.ranks;
+  }
+
   getPieceImage(piece: string): string {
     const normalized = piece.toLowerCase();
     return piece === piece.toUpperCase()
@@ -115,10 +123,10 @@ export class GridComponent {
     return !!this.lastMove && (this.lastMove.from === square || this.lastMove.to === square);
   }
 
-  onSquareClick(row: number, column: number): void {
+  onSquareClick(file: string, rank: number): void {
     if (this.promotionMove || this.isGameOver) return;
 
-    const square = this.toSquare(row, column);
+    const square = `${file}${rank}`;
     if (this.selectedSquare && this.isLegalTarget(square)) {
       if (this.isPromotionMove(this.selectedSquare, square)) {
         this.promotionMove = { from: this.selectedSquare, to: square };
@@ -128,7 +136,7 @@ export class GridComponent {
       return;
     }
 
-    const piece = this.grid[row][column];
+    const piece = this.getPieceAt(square);
     if (piece && this.isCurrentPlayerPiece(piece)) {
       this.selectSquare(square);
     } else {
@@ -246,8 +254,10 @@ export class GridComponent {
     return piece.toLowerCase() === 'p' && (to[1] === '1' || to[1] === '8');
   }
 
-  private toSquare(row: number, column: number): string {
-    return `${this.files[column]}${this.ranks[row]}`;
+  getPieceAt(square: string): string {
+    const fileIndex = this.files.indexOf(square[0]);
+    const rankIndex = this.ranks.indexOf(Number(square[1]));
+    return fileIndex >= 0 && rankIndex >= 0 ? this.grid[rankIndex][fileIndex] : '';
   }
 
   private connectToGame(): void {
